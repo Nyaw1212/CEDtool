@@ -1,10 +1,5 @@
 <script>
   document.addEventListener('DOMContentLoaded', () => {
-    const allChip = document.querySelector('.filter-chip[data-filter="all"]');
-    if (allChip && allChip.childNodes.length) {
-      allChip.childNodes[0].textContent = 'View All ';
-    }
-
     state.parserFilter = 'all';
     resetActiveFilterChip();
   });
@@ -39,6 +34,13 @@
     });
 
     renderParserTable(filtered);
+  }
+
+  function getStatusPresentation(item) {
+    if (!item.catalogMatch) return { label: 'NO MATCH', className: 'new' };
+    if (item.priceStatus === 'INCREASED') return { label: 'INCREASED', className: 'increased' };
+    if (item.priceStatus === 'DECREASED') return { label: 'DECREASED', className: 'decreased' };
+    return { label: 'SAME PRICE', className: 'matched' };
   }
 
   function renderParserTable(items) {
