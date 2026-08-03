@@ -1,9 +1,13 @@
 const QuoteParserEngine = (() => {
+  const STACKED_HEADER = /^([A-Z][A-Z0-9&.-]{1,15})\s+([A-Z0-9][A-Z0-9.+/_-]{2,})$/i;
+  const STACKED_PRICE = /(?:^|\s)(\d+(?:\.\d+)?)\s+\$?([\d,]+\.\d{2})\s+E(?:\s+\$?([\d,]+\.\d{2}))?(?=\s|$)/i;
+  const FOOTER = /^(MERCHANDISE:|TAX:|TOTAL:|PLEASE NOTE:|TERMS AND CONDITIONS|\d+ OF \d+|\* PER )/i;
+
   function getMetadata() {
     return {
       id: 'parser',
       name: 'Greentech Quote Parser',
-      version: '0.4.1',
+      version: '0.7.1',
       actions: ['parseInvoice']
     };
   }
@@ -29,6 +33,10 @@ const QuoteParserEngine = (() => {
       };
     });
 
+    addMissingStackedMatches_(payload, items, catalog);
+    items.sort((a, b) => Number(a.sourceLine || 0) - Number(b.sourceLine || 0));
+    items.forEach((item, index) => { item.sourceOrder = index + 1; });
+
     return {
       ...result,
       count: items.length,
@@ -36,6 +44,83 @@ const QuoteParserEngine = (() => {
       newSkuCount: items.filter(item => !item.catalogMatch).length,
       items
     };
+  }
+
+  function addMissingStackedMatches_(payload, items, catalog) {
+    const text = String(payload && payload.text ? payload.text : '');
+    const lines = text
+      .replace(/\r/g, '')
+      .split('\n')
+      .map(line => line.replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+
+    const existing = new Set(items.map(item => compact_(item.parsedSku || item.sku)));
+
+    for (let index = 0; index < lines.length; index += 1) {
+      const header = lines[index].match(STACKED_HEADER);
+      if (!header) continue;
+
+      const vendor = normalizeSku_(header[1]);
+      const parsedSku = normalizeSku_(header[2]);
+      if (isExcludedVendor_(vendor) || !/[0-9]/.test(parsedSku)) continue;
+      if (existing.has(compact_(parsedSku))) continue;
+
+      const block = [lines[index]];
+      for (let cursor = index + 1; cursor < Math.min(lines.length, index + 14); cursor += 1) {
+        const line = lines[cursor];
+        if (cursor > index + 1 && STACKED_HEADER.test(line)) break;
+        block.push(line);
+        if (FOOTER.test(line)) break;
+      }
+
+      const flat = block.slice(1).join(' ');
+      const priceMatch = flat.match(STACKED_PRICE);
+      if (!priceMatch) continue;
+
+      const description = findFallbackDescription_(block.slice(1));
+      const match = findCatalogMatch_(parsedSku, description, catalog);
+      if (!match) continue;
+
+      const quantity = Number(priceMatch[1]);
+      const price = toNumber_(priceMatch[2]);
+      const extPrice = priceMatch[3]
+        ? toNumber_(priceMatch[3])
+        : Number((quantity * price).toFixed(2));
+
+      items.push({
+        parsedSku,
+        sku: parsedSku,
+        vendor,
+        spaSku: match.sku,
+        description: description || match.description || '',
+        invoiceDescription: description,
+        quantityOrdered: quantity,
+        quantityShipped: quantity,
+        price,
+        extPrice,
+        catalogMatch: true,
+        catalogPrice: match.price,
+        catalogExtPrice: match.extPrice != null ? match.extPrice : null,
+        matchSource: priceMatch[3] ? 'STACKED_FALLBACK' : 'STACKED_PARTIAL_PRICE_FALLBACK',
+        matchScore: match.score,
+        sourceLine: index + 1,
+        sourceText: block.join('\n')
+      });
+
+      existing.add(compact_(parsedSku));
+    }
+  }
+
+  function findFallbackDescription_(lines) {
+    for (const line of lines) {
+      if (!line || FOOTER.test(line)) continue;
+      if (/^E$/i.test(line)) continue;
+      if (/^\$?[\d,]+\.\d{2}$/.test(line)) continue;
+      if (/^\d+(?:\.\d+)?$/.test(line)) continue;
+      if (!/[A-Z]/i.test(line)) continue;
+      return line;
+    }
+    return '';
   }
 
   function extractParsedSku_(item) {
@@ -125,6 +210,10 @@ const QuoteParserEngine = (() => {
     return intersection / Math.max(left.size, right.size);
   }
 
+  function isExcludedVendor_(value) {
+    return /^(DOM|DOMESTIC|GROUNDING|T-BOLT|RD|HUG|MERCHANDISE|TAX|TOTAL|PLEASE|TERMS|GREENTECH|CUSTOMER|MAYER)$/i.test(value);
+  }
+
   function normalizeSku_(value) {
     return String(value == null ? '' : value)
       .trim()
@@ -144,6 +233,11 @@ const QuoteParserEngine = (() => {
       .replace(/[^A-Z0-9]+/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
+  }
+
+  function toNumber_(value) {
+    const number = Number(String(value == null ? '' : value).replace(/[$,]/g, ''));
+    return Number.isFinite(number) ? number : null;
   }
 
   return { getMetadata, parseInvoice };
