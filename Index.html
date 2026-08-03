@@ -10,33 +10,84 @@
     <header class="app-header">
       <div>
         <h1>CED Price Engine</h1>
-        <p>Google Sheets price list viewer</p>
+        <p>Sheet-backed catalog viewer and invoice parser</p>
       </div>
-      <button id="refreshButton" type="button">Refresh</button>
     </header>
 
-    <section class="toolbar">
-      <input id="searchInput" type="search" placeholder="Search SKU or description">
-      <span id="recordCount">0 items</span>
+    <nav class="tabs" aria-label="Tool sections">
+      <button class="tab-button active" data-tab="catalog" type="button">Price List</button>
+      <button class="tab-button" data-tab="parser" type="button">Invoice Parser</button>
+    </nav>
+
+    <section id="catalogTab" class="tab-panel active">
+      <div class="toolbar">
+        <input id="searchInput" type="search" placeholder="Search SKU or description">
+        <div class="toolbar-actions">
+          <span id="recordCount">0 items</span>
+          <button id="refreshButton" type="button">Refresh</button>
+        </div>
+      </div>
+
+      <section class="table-card">
+        <div id="loadingState">Loading price data...</div>
+        <div id="errorState" hidden></div>
+
+        <div class="table-wrapper">
+          <table id="priceTable" hidden>
+            <thead>
+              <tr>
+                <th>SKU</th>
+                <th>Description</th>
+                <th class="number">Price</th>
+                <th class="number">Ext Price</th>
+              </tr>
+            </thead>
+            <tbody id="priceTableBody"></tbody>
+          </table>
+        </div>
+      </section>
     </section>
 
-    <section class="table-card">
-      <div id="loadingState">Loading price data...</div>
-      <div id="errorState" hidden></div>
+    <section id="parserTab" class="tab-panel">
+      <section class="parser-card">
+        <div class="section-heading">
+          <div>
+            <h2>Greentech Invoice Parser</h2>
+            <p>Paste invoice text below. Known SKUs are cross-checked against the LIST sheet.</p>
+          </div>
+          <button id="parseButton" type="button">Parse Invoice</button>
+        </div>
 
-      <div class="table-wrapper">
-        <table id="priceTable" hidden>
-          <thead>
-            <tr>
-              <th>SKU</th>
-              <th>Description</th>
-              <th class="number">Price</th>
-              <th class="number">Ext Price</th>
-            </tr>
-          </thead>
-          <tbody id="priceTableBody"></tbody>
-        </table>
-      </div>
+        <textarea id="invoiceText" rows="14" placeholder="Paste invoice text here..."></textarea>
+        <div id="parserError" class="error-message" hidden></div>
+      </section>
+
+      <section id="parserSummary" class="summary-grid" hidden>
+        <article><span>Invoice</span><strong id="invoiceNumber">—</strong></article>
+        <article><span>Date</span><strong id="invoiceDate">—</strong></article>
+        <article><span>Items</span><strong id="parsedCount">0</strong></article>
+        <article><span>Catalog Matches</span><strong id="matchedCount">0</strong></article>
+        <article><span>New SKUs</span><strong id="newSkuCount">0</strong></article>
+      </section>
+
+      <section id="parserResultsCard" class="table-card" hidden>
+        <div class="table-wrapper parser-results-wrapper">
+          <table id="parserTable">
+            <thead>
+              <tr>
+                <th>SKU</th>
+                <th>Description</th>
+                <th class="number">Qty</th>
+                <th class="number">Invoice Price</th>
+                <th class="number">Ext Price</th>
+                <th class="number">LIST Price</th>
+                <th>Match</th>
+              </tr>
+            </thead>
+            <tbody id="parserTableBody"></tbody>
+          </table>
+        </div>
+      </section>
     </section>
   </main>
 
