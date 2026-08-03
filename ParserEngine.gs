@@ -1,43 +1,43 @@
 const ParserEngine = (() => {
-  const ITEM_LINE_PATTERN = /^(\d{1,3})\s+([A-Z][A-Z0-9&.-]{1,12})\s+(.+)$/i;
-  const PRICE_LINE_PATTERN = /^(\d+(?:\.\d+)?)\s+\$?([\d,]+\.\d{2})\s+E(?:\s+\$?([\d,]+\.\d{2}))?$/i;
+  const NUMBERED_HEADER = /^(\d{1,3})\s+([A-Z][A-Z0-9&.-]{1,15})\s+(.+)$/i;
+  const INVOICE_HEADER = /^T\s+(\d+(?:\.\d+)?)\s+([A-Z][A-Z0-9&.-]{1,15})\s+(.+)$/i;
+  const PRICE_SEQUENCE = /(?:^|\s)(\d+(?:\.\d+)?)\s+\$?([\d,]+\.\d{2})\s+E(?:\s+\$?([\d,]+\.\d{2}))?(?=\s|$)/i;
   const MIN_MATCH_SCORE = 0.72;
 
   function getMetadata() {
     return {
       id: 'parser',
-      name: 'Greentech Numbered Quote Parser',
-      version: '0.5.3',
+      name: 'Greentech Format Parser',
+      version: '0.6.0',
       actions: ['parseInvoice']
     };
   }
 
   function parseInvoice(payload) {
     const text = String(payload && payload.text ? payload.text : '').trim();
-    if (!text) throw new Error('Quote text is required.');
+    if (!text) throw new Error('Invoice or quote text is required.');
 
     const catalog = (PriceEngine.list().items || []).map(prepareCatalogItem_);
     const lines = normalizeLines_(text);
-    const starts = findNumberedItemStarts_(lines);
+    const starts = findItemStarts_(lines);
     const items = [];
 
     starts.forEach((start, index) => {
-      const nextStart = starts[index + 1];
-      const endIndex = nextStart ? nextStart.lineIndex : lines.length;
-      const blockLines = lines.slice(start.lineIndex, endIndex);
-      const parsed = parseNumberedItemBlock_(blockLines, start);
+      const end = index + 1 < starts.length ? starts[index + 1].lineIndex : lines.length;
+      const block = lines.slice(start.lineIndex, end);
+      const parsed = parseBlock_(block, start);
       if (!parsed) return;
 
       const match = findBestCatalogMatch_(parsed, catalog);
       const catalogItem = match ? match.item : null;
 
       items.push({
-        parsedSku: parsed.parsedSku,
-        sku: parsed.parsedSku,
-        vendor: parsed.vendor,
+        parsedSku: parsed.sku,
+        sku: parsed.sku,
+        vendor: start.vendor,
         spaSku: catalogItem ? catalogItem.sku : '',
-        description: parsed.invoiceDescription || (catalogItem ? catalogItem.description : ''),
-        invoiceDescription: parsed.invoiceDescription,
+        description: parsed.description || (catalogItem ? catalogItem.description : ''),
+        invoiceDescription: parsed.description,
         quantityOrdered: parsed.quantity,
         quantityShipped: parsed.quantity,
         price: parsed.price,
@@ -49,19 +49,15 @@ const ParserEngine = (() => {
         matchSource: match ? match.source : 'NO_MATCH',
         sourceOrder: items.length + 1,
         sourceLine: start.lineIndex + 1,
-        sourceText: blockLines.join('\n')
+        sourceText: block.join('\n')
       });
     });
 
-    const documentInfo = extractDocumentInfo_(text);
-
+    const info = extractDocumentInfo_(text);
     return {
       success: true,
-      documentType: documentInfo.type,
-      invoice: {
-        number: documentInfo.number,
-        date: documentInfo.date
-      },
+      documentType: info.type,
+      invoice: { number: info.number, date: info.date },
       count: items.length,
       matchedCount: items.filter(item => item.catalogMatch).length,
       newSkuCount: items.filter(item => !item.catalogMatch).length,
@@ -77,63 +73,53 @@ const ParserEngine = (() => {
       .filter(Boolean);
   }
 
-  function findNumberedItemStarts_(lines) {
+  function findItemStarts_(lines) {
     const starts = [];
 
     lines.forEach((line, lineIndex) => {
-      const match = line.match(ITEM_LINE_PATTERN);
+      let match = line.match(NUMBERED_HEADER);
+      let source = 'NUMBERED_QUOTE';
+
+      if (!match) {
+        match = line.match(INVOICE_HEADER);
+        source = 'T_INVOICE';
+      }
+
       if (!match) return;
 
       const vendor = normalizeSku_(match[2]);
-      const productText = normalizeSku_(match[3]);
-      const parsedSku = extractSkuFromProductText_(vendor, productText);
+      const sku = normalizeSku_(match[3]);
 
-      if (!parsedSku || !hasPriceBeforeNextItem_(lines, lineIndex + 1)) return;
+      if (!looksLikeSku_(sku)) return;
+      if (!hasPriceBeforeNextHeader_(lines, lineIndex + 1)) return;
 
       starts.push({
         lineIndex,
-        lineNumber: Number(match[1]),
         vendor,
-        parsedSku
+        sku,
+        source
       });
     });
 
     return starts;
   }
 
-  function extractSkuFromProductText_(vendor, productText) {
-    const tokens = productText.split(/\s+/).filter(Boolean);
-    if (!tokens.length) return '';
+  function hasPriceBeforeNextHeader_(lines, fromIndex) {
+    const buffer = [];
 
-    // Q.TRON module codes intentionally contain spaces and end with wattage.
-    if (vendor === 'QCELL' && /^Q\.TRON\b/i.test(productText)) {
-      return productText;
+    for (let index = fromIndex; index < Math.min(lines.length, fromIndex + 14); index += 1) {
+      if (NUMBERED_HEADER.test(lines[index]) || INVOICE_HEADER.test(lines[index])) break;
+      buffer.push(lines[index]);
+      if (PRICE_SEQUENCE.test(buffer.join(' '))) return true;
     }
 
-    // All normal Greentech lines use: LN VENDOR SKU.
-    return normalizeSku_(tokens[0]);
-  }
-
-  function hasPriceBeforeNextItem_(lines, fromIndex) {
-    for (let index = fromIndex; index < Math.min(lines.length, fromIndex + 10); index += 1) {
-      if (ITEM_LINE_PATTERN.test(lines[index])) return false;
-      if (PRICE_LINE_PATTERN.test(lines[index])) return true;
-    }
     return false;
   }
 
-  function parseNumberedItemBlock_(blockLines, start) {
-    let priceMatch = null;
-    let priceLineIndex = -1;
-
-    for (let index = 1; index < blockLines.length; index += 1) {
-      const match = blockLines[index].match(PRICE_LINE_PATTERN);
-      if (!match) continue;
-      priceMatch = match;
-      priceLineIndex = index;
-      break;
-    }
-
+  function parseBlock_(block, start) {
+    const body = block.slice(1);
+    const flat = body.join(' ');
+    const priceMatch = flat.match(PRICE_SEQUENCE);
     if (!priceMatch) return null;
 
     const quantity = Number(priceMatch[1]);
@@ -142,32 +128,38 @@ const ParserEngine = (() => {
       ? toNumber_(priceMatch[3])
       : Number((quantity * price).toFixed(2));
 
-    const invoiceDescription = extractDescription_(blockLines, priceLineIndex);
+    const description = findDescription_(body);
 
     return {
-      parsedSku: start.parsedSku,
-      vendor: start.vendor,
-      invoiceDescription,
+      sku: start.sku,
+      description,
       quantity,
       price,
       extPrice
     };
   }
 
-  function extractDescription_(blockLines, priceLineIndex) {
-    // In this template the first line after LN/Vendor/SKU is the description.
-    for (let index = 1; index < priceLineIndex; index += 1) {
-      const line = blockLines[index];
-      if (!line || PRICE_LINE_PATTERN.test(line)) continue;
+  function findDescription_(body) {
+    for (const line of body) {
+      if (PRICE_SEQUENCE.test(line)) continue;
+      if (/^(E|MERCHANDISE:|TAX:|TOTAL:|PLEASE NOTE:|TERMS AND CONDITIONS)/i.test(line)) continue;
+      if (/^\$?[\d,]+\.\d{2}$/.test(line)) continue;
+      if (/^\d+(?:\.\d+)?$/.test(line)) continue;
+      if (!/[A-Z]/i.test(line)) continue;
       return line.length <= 180 ? line : line.slice(0, 180).trim();
     }
     return '';
   }
 
+  function looksLikeSku_(value) {
+    const text = normalizeSku_(value);
+    if (text.length < 3 || text.length > 100) return false;
+    return /[A-Z]/.test(text) && /[0-9]/.test(text);
+  }
+
   function prepareCatalogItem_(item) {
     return {
       ...item,
-      normalizedSku: normalizeSku_(item.sku),
       compactSku: compactSku_(item.sku),
       normalizedDescription: normalizeText_(item.description),
       compactDescription: compactSku_(item.description)
@@ -175,27 +167,24 @@ const ParserEngine = (() => {
   }
 
   function findBestCatalogMatch_(parsed, catalog) {
-    const parsedSku = compactSku_(parsed.parsedSku);
-    const parsedDescription = normalizeText_(parsed.invoiceDescription);
+    const parsedSku = compactSku_(parsed.sku);
+    const parsedDescription = normalizeText_(parsed.description);
     let best = null;
 
     for (const item of catalog) {
       let score = 0;
       let source = 'FUZZY';
 
-      if (parsedSku && parsedSku === item.compactSku) {
+      if (parsedSku === item.compactSku) {
         score = 1;
         source = 'EXACT_SKU';
-      } else if (
-        parsedSku.length >= 6 &&
-        (item.compactDescription.includes(parsedSku) || parsedSku.includes(item.compactSku))
-      ) {
+      } else if (parsedSku.length >= 6 && item.compactDescription.includes(parsedSku)) {
         score = 0.96;
         source = 'SKU_IN_DESCRIPTION';
       } else {
         const skuScore = similarity_(parsedSku, item.compactSku);
         const descriptionScore = tokenSimilarity_(parsedDescription, item.normalizedDescription);
-        score = Math.max(skuScore, descriptionScore, (skuScore * 0.7) + (descriptionScore * 0.3));
+        score = Math.max(skuScore, descriptionScore, skuScore * 0.7 + descriptionScore * 0.3);
         source = descriptionScore > skuScore ? 'DESCRIPTION_MATCH' : 'FUZZY_SKU';
       }
 
@@ -209,71 +198,51 @@ const ParserEngine = (() => {
     if (!a || !b) return 0;
     if (a === b) return 1;
     const distance = levenshtein_(a, b);
-    return 1 - (distance / Math.max(a.length, b.length));
+    return 1 - distance / Math.max(a.length, b.length);
   }
 
   function levenshtein_(a, b) {
-    const previous = Array.from({ length: b.length + 1 }, (_, index) => index);
-
+    const row = Array.from({ length: b.length + 1 }, (_, i) => i);
     for (let i = 1; i <= a.length; i += 1) {
-      let diagonal = previous[0];
-      previous[0] = i;
-
+      let diagonal = row[0];
+      row[0] = i;
       for (let j = 1; j <= b.length; j += 1) {
-        const saved = previous[j];
-        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-        previous[j] = Math.min(previous[j] + 1, previous[j - 1] + 1, diagonal + cost);
+        const saved = row[j];
+        row[j] = Math.min(row[j] + 1, row[j - 1] + 1, diagonal + (a[i - 1] === b[j - 1] ? 0 : 1));
         diagonal = saved;
       }
     }
-
-    return previous[b.length];
+    return row[b.length];
   }
 
   function tokenSimilarity_(a, b) {
     const left = new Set(String(a || '').split(/\s+/).filter(token => token.length > 1));
     const right = new Set(String(b || '').split(/\s+/).filter(token => token.length > 1));
     if (!left.size || !right.size) return 0;
-
     let intersection = 0;
-    left.forEach(token => {
-      if (right.has(token)) intersection += 1;
-    });
-
-    const union = new Set([...left, ...right]).size;
-    return union ? intersection / union : 0;
+    left.forEach(token => { if (right.has(token)) intersection += 1; });
+    return intersection / new Set([...left, ...right]).size;
   }
 
   function extractDocumentInfo_(text) {
-    const quoteNumberMatch = text.match(/\b(Q\d{5,})\b/i);
-    const quoteDateMatch = text.match(/Quote Date:[\s\S]{0,180}?(\d{2}\/\d{2}\/\d{2,4})/i);
+    const invoice = text.match(/INVOICE\s+NO\.\s+INVOICE\s+DATE[\s\S]*?(\d+\s*-\s*\d+)\s+(\d{2}\/\d{2}\/\d{2,4})/i);
+    if (invoice) return { type: 'INVOICE', number: invoice[1], date: invoice[2] };
 
-    return {
-      type: 'QUOTE',
-      number: quoteNumberMatch ? quoteNumberMatch[1].toUpperCase() : '',
-      date: quoteDateMatch ? quoteDateMatch[1] : ''
-    };
+    const quote = text.match(/\b(Q\d{5,})\b/i);
+    const date = text.match(/Quote Date:[\s\S]{0,180}?(\d{2}\/\d{2}\/\d{2,4})/i);
+    return { type: quote ? 'QUOTE' : 'DOCUMENT', number: quote ? quote[1].toUpperCase() : '', date: date ? date[1] : '' };
   }
 
   function normalizeSku_(value) {
-    return String(value == null ? '' : value)
-      .trim()
-      .replace(/\s+/g, ' ')
-      .toUpperCase();
+    return String(value == null ? '' : value).trim().replace(/\s+/g, ' ').toUpperCase();
   }
 
   function compactSku_(value) {
-    return String(value == null ? '' : value)
-      .toUpperCase()
-      .replace(/[^A-Z0-9]/g, '');
+    return String(value == null ? '' : value).toUpperCase().replace(/[^A-Z0-9]/g, '');
   }
 
   function normalizeText_(value) {
-    return String(value == null ? '' : value)
-      .toUpperCase()
-      .replace(/[^A-Z0-9]+/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
+    return String(value == null ? '' : value).toUpperCase().replace(/[^A-Z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
   }
 
   function toNumber_(value) {
