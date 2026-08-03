@@ -1,14 +1,16 @@
 const ParserEngine = (() => {
   const NUMBERED_HEADER = /^(\d{1,3})\s+([A-Z][A-Z0-9&.-]{1,15})\s+(.+)$/i;
   const INVOICE_HEADER = /^T\s+(\d+(?:\.\d+)?)\s+([A-Z][A-Z0-9&.-]{1,15})\s+(.+)$/i;
+  const STACKED_VENDOR_LINE = /^([A-Z][A-Z0-9&.-]{1,15})\s+(.+)$/i;
   const PRICE_SEQUENCE = /(?:^|\s)(\d+(?:\.\d+)?)\s+\$?([\d,]+\.\d{2})\s+E(?:\s+\$?([\d,]+\.\d{2}))?(?=\s|$)/i;
   const MIN_MATCH_SCORE = 0.72;
+  const MAX_STACKED_SKU_LINES = 3;
 
   function getMetadata() {
     return {
       id: 'parser',
-      name: 'Greentech Format Parser',
-      version: '0.6.0',
+      name: 'Greentech Two-Page Format Parser',
+      version: '0.7.0',
       actions: ['parseInvoice']
     };
   }
@@ -75,6 +77,7 @@ const ParserEngine = (() => {
 
   function findItemStarts_(lines) {
     const starts = [];
+    const inlineLines = new Set();
 
     lines.forEach((line, lineIndex) => {
       let match = line.match(NUMBERED_HEADER);
@@ -89,25 +92,79 @@ const ParserEngine = (() => {
 
       const vendor = normalizeSku_(match[2]);
       const sku = normalizeSku_(match[3]);
-
       if (!looksLikeSku_(sku)) return;
-      if (!hasPriceBeforeNextHeader_(lines, lineIndex + 1)) return;
+      if (!hasPriceBeforeNextInlineHeader_(lines, lineIndex + 1)) return;
 
-      starts.push({
-        lineIndex,
-        vendor,
-        sku,
-        source
-      });
+      starts.push({ lineIndex, lineCount: 1, vendor, sku, source });
+      inlineLines.add(lineIndex);
     });
 
-    return starts;
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+      if (inlineLines.has(lineIndex)) continue;
+      const stacked = detectStackedStart_(lines, lineIndex);
+      if (!stacked) continue;
+
+      starts.push(stacked);
+      lineIndex += stacked.lineCount - 1;
+    }
+
+    return dedupeAndSortStarts_(starts);
   }
 
-  function hasPriceBeforeNextHeader_(lines, fromIndex) {
+  function detectStackedStart_(lines, lineIndex) {
+    const first = lines[lineIndex] || '';
+    const match = first.match(STACKED_VENDOR_LINE);
+    if (!match) return null;
+
+    const vendor = normalizeSku_(match[1]);
+    if (isExcludedVendorWord_(vendor)) return null;
+
+    const firstSkuPart = normalizeSku_(match[2]);
+    if (!firstSkuPart || /\s{2,}/.test(firstSkuPart)) return null;
+
+    for (let lineCount = MAX_STACKED_SKU_LINES; lineCount >= 1; lineCount -= 1) {
+      const parts = [firstSkuPart];
+      let valid = true;
+
+      for (let offset = 1; offset < lineCount; offset += 1) {
+        const continuation = lines[lineIndex + offset] || '';
+        if (!/^[A-Z0-9.+/_-]+$/i.test(continuation)) {
+          valid = false;
+          break;
+        }
+        parts.push(continuation);
+      }
+
+      if (!valid) continue;
+
+      const sku = normalizeStackedSku_(parts);
+      if (!looksLikeSku_(sku)) continue;
+      if (!hasStackedPriceNearby_(lines, lineIndex + lineCount)) continue;
+
+      return {
+        lineIndex,
+        lineCount,
+        vendor,
+        sku,
+        source: lineCount > 1 ? 'STACKED_SPLIT_SKU' : 'STACKED_SKU'
+      };
+    }
+
+    return null;
+  }
+
+  function normalizeStackedSku_(parts) {
+    if (parts.length === 1) return normalizeSku_(parts[0]);
+
+    // PDF extraction may split a SKU such as QM-HUG-02-M1-US into
+    // QM-HUG / 02-M / 1-US. Compact matching still resolves it to SPA SKU.
+    return normalizeSku_(parts.join('-').replace(/--+/g, '-'));
+  }
+
+  function hasPriceBeforeNextInlineHeader_(lines, fromIndex) {
     const buffer = [];
 
-    for (let index = fromIndex; index < Math.min(lines.length, fromIndex + 14); index += 1) {
+    for (let index = fromIndex; index < Math.min(lines.length, fromIndex + 16); index += 1) {
       if (NUMBERED_HEADER.test(lines[index]) || INVOICE_HEADER.test(lines[index])) break;
       buffer.push(lines[index]);
       if (PRICE_SEQUENCE.test(buffer.join(' '))) return true;
@@ -116,8 +173,21 @@ const ParserEngine = (() => {
     return false;
   }
 
+  function hasStackedPriceNearby_(lines, fromIndex) {
+    const buffer = [];
+
+    for (let index = fromIndex; index < Math.min(lines.length, fromIndex + 10); index += 1) {
+      const line = lines[index];
+      if (isDocumentFooter_(line)) break;
+      buffer.push(line);
+      if (PRICE_SEQUENCE.test(buffer.join(' '))) return true;
+    }
+
+    return false;
+  }
+
   function parseBlock_(block, start) {
-    const body = block.slice(1);
+    const body = block.slice(start.lineCount || 1);
     const flat = body.join(' ');
     const priceMatch = flat.match(PRICE_SEQUENCE);
     if (!priceMatch) return null;
@@ -128,27 +198,71 @@ const ParserEngine = (() => {
       ? toNumber_(priceMatch[3])
       : Number((quantity * price).toFixed(2));
 
-    const description = findDescription_(body);
-
     return {
       sku: start.sku,
-      description,
+      description: findDescription_(body, start.source),
       quantity,
       price,
       extPrice
     };
   }
 
-  function findDescription_(body) {
-    for (const line of body) {
-      if (PRICE_SEQUENCE.test(line)) continue;
-      if (/^(E|MERCHANDISE:|TAX:|TOTAL:|PLEASE NOTE:|TERMS AND CONDITIONS)/i.test(line)) continue;
-      if (/^\$?[\d,]+\.\d{2}$/.test(line)) continue;
-      if (/^\d+(?:\.\d+)?$/.test(line)) continue;
-      if (!/[A-Z]/i.test(line)) continue;
-      return line.length <= 180 ? line : line.slice(0, 180).trim();
+  function findDescription_(body, source) {
+    const priceStart = findPriceStartIndex_(body);
+
+    if (/^STACKED/.test(source)) {
+      // In the stacked page layout, descriptions follow the price columns.
+      for (let index = Math.max(priceStart + 1, 0); index < body.length; index += 1) {
+        const line = body[index];
+        if (isDescriptionLine_(line)) return truncate_(line, 180);
+      }
     }
+
+    // In the inline layout, the description appears before the price row.
+    const end = priceStart >= 0 ? priceStart : body.length;
+    for (let index = 0; index < end; index += 1) {
+      const line = body[index];
+      if (isDescriptionLine_(line)) return truncate_(line, 180);
+    }
+
     return '';
+  }
+
+  function findPriceStartIndex_(body) {
+    for (let start = 0; start < body.length; start += 1) {
+      const candidate = body.slice(start, Math.min(body.length, start + 5)).join(' ');
+      if (PRICE_SEQUENCE.test(candidate)) return start;
+    }
+    return -1;
+  }
+
+  function isDescriptionLine_(line) {
+    if (!line || !/[A-Z]/i.test(line)) return false;
+    if (/^(E|LN|PRODUCT|QTY|PRICE|PER \*|EXT PRICE|QUOTE:|MERCHANDISE:|TAX:|TOTAL:)/i.test(line)) return false;
+    if (/^\$?[\d,]+\.\d{2}$/.test(line)) return false;
+    if (/^\d+(?:\.\d+)?$/.test(line)) return false;
+    if (NUMBERED_HEADER.test(line) || INVOICE_HEADER.test(line)) return false;
+    return true;
+  }
+
+  function isExcludedVendorWord_(value) {
+    return /^(GREENTECH|CUSTOMER|CONTACT|MAYER|SHIP|QUOTE|UPDATED|EXPIRES|FREIGHT|FOB|DOMESTIC|GROUNDING|T-BOLT|RD|HUG|TERMS|PLEASE)$/i.test(value);
+  }
+
+  function isDocumentFooter_(line) {
+    return /^(MERCHANDISE:|TAX:|TOTAL:|PLEASE NOTE:|TERMS AND CONDITIONS|\d+ OF \d+|\* PER )/i.test(line);
+  }
+
+  function dedupeAndSortStarts_(starts) {
+    const seen = new Set();
+    return starts
+      .sort((a, b) => a.lineIndex - b.lineIndex)
+      .filter(start => {
+        const key = `${start.lineIndex}:${compactSku_(start.sku)}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
   }
 
   function looksLikeSku_(value) {
@@ -178,7 +292,10 @@ const ParserEngine = (() => {
       if (parsedSku === item.compactSku) {
         score = 1;
         source = 'EXACT_SKU';
-      } else if (parsedSku.length >= 6 && item.compactDescription.includes(parsedSku)) {
+      } else if (
+        parsedSku.length >= 6 &&
+        (item.compactDescription.includes(parsedSku) || parsedSku.includes(item.compactSku))
+      ) {
         score = 0.96;
         source = 'SKU_IN_DESCRIPTION';
       } else {
@@ -230,7 +347,11 @@ const ParserEngine = (() => {
 
     const quote = text.match(/\b(Q\d{5,})\b/i);
     const date = text.match(/Quote Date:[\s\S]{0,180}?(\d{2}\/\d{2}\/\d{2,4})/i);
-    return { type: quote ? 'QUOTE' : 'DOCUMENT', number: quote ? quote[1].toUpperCase() : '', date: date ? date[1] : '' };
+    return {
+      type: quote ? 'QUOTE' : 'DOCUMENT',
+      number: quote ? quote[1].toUpperCase() : '',
+      date: date ? date[1] : ''
+    };
   }
 
   function normalizeSku_(value) {
@@ -242,12 +363,21 @@ const ParserEngine = (() => {
   }
 
   function normalizeText_(value) {
-    return String(value == null ? '' : value).toUpperCase().replace(/[^A-Z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+    return String(value == null ? '' : value)
+      .toUpperCase()
+      .replace(/[^A-Z0-9]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
   function toNumber_(value) {
     const number = Number(String(value == null ? '' : value).replace(/[$,]/g, ''));
     return Number.isFinite(number) ? number : null;
+  }
+
+  function truncate_(value, maxLength) {
+    const text = String(value || '');
+    return text.length <= maxLength ? text : text.slice(0, maxLength).trim();
   }
 
   return { getMetadata, parseInvoice };
