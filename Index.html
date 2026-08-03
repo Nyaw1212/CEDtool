@@ -32,8 +32,9 @@
 
           <textarea id="invoiceText" placeholder="Paste the complete Greentech invoice text here..."></textarea>
 
-          <div class="parser-actions">
-            <button id="parseButton" class="primary-button" type="button">Parse Invoice</button>
+          <div class="auto-parse-status" aria-live="polite">
+            <span class="status-dot"></span>
+            <span id="parserStatus">Paste invoice text to begin. Parsing runs automatically.</span>
           </div>
 
           <div id="parserError" class="error-message" hidden></div>
@@ -90,7 +91,7 @@
 
           <div id="parserEmptyState" class="empty-state">
             <strong>No parsed items yet</strong>
-            <span>Paste an invoice on the left, then click Parse Invoice.</span>
+            <span>Paste an invoice on the left. Results appear automatically.</span>
           </div>
 
           <div id="parserResultsCard" class="table-wrapper parser-results-wrapper" hidden>
