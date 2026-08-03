@@ -2,12 +2,13 @@ const Engine = (() => {
   /**
    * Resolve modules lazily at runtime.
    *
-   * Apps Script does not guarantee source-file evaluation order, so a module
+   * Apps Script does not guarantee source-file evaluation order, so modules
    * must not be referenced while the global Engine object is being created.
    */
   function getModules_() {
     return {
-      price: PriceEngine
+      price: PriceEngine,
+      parser: ParserEngine
     };
   }
 
