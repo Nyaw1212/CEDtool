@@ -6,8 +6,8 @@ const SkuAnchorCorrectionEngine = (() => {
     const metadata = QuoteParserEngine.getMetadata();
     return {
       ...metadata,
-      name: 'Greentech Parser with LIST and NOSPA Anchors',
-      version: '0.8.0'
+      name: 'Greentech Parser with LIST-first SKU Anchors',
+      version: '0.8.1'
     };
   }
 
@@ -47,39 +47,43 @@ const SkuAnchorCorrectionEngine = (() => {
 
   function prepareAnchorItems_(spaItems, noSpaItems) {
     const combined = [];
-    const seen = new Set();
+    const spaCompacts = new Set();
 
     spaItems.forEach(item => {
       const compactSku = compact_(item.sku);
-      if (!compactSku || seen.has(`SPA:${compactSku}`)) return;
-      seen.add(`SPA:${compactSku}`);
+      if (!compactSku || spaCompacts.has(compactSku)) return;
+      spaCompacts.add(compactSku);
       combined.push({
         sku: item.sku,
         compactSku,
         source: 'SPA',
+        priority: 0,
         price: item.price,
         extPrice: item.extPrice,
         description: item.description || ''
       });
     });
 
+    const noSpaSeen = new Set();
     noSpaItems.forEach(item => {
       const compactSku = compact_(item.sku);
-      if (!compactSku) return;
-      if (spaItems.some(spa => compact_(spa.sku) === compactSku)) return;
-      if (seen.has(`NOSPA:${compactSku}`)) return;
-      seen.add(`NOSPA:${compactSku}`);
+      if (!compactSku || spaCompacts.has(compactSku) || noSpaSeen.has(compactSku)) return;
+      noSpaSeen.add(compactSku);
       combined.push({
         sku: item.sku,
         compactSku,
         source: 'NOSPA',
+        priority: 1,
         price: null,
         extPrice: null,
         description: ''
       });
     });
 
-    return combined.sort((a, b) => b.compactSku.length - a.compactSku.length);
+    return combined.sort((a, b) => {
+      if (a.priority !== b.priority) return a.priority - b.priority;
+      return b.compactSku.length - a.compactSku.length;
+    });
   }
 
   function findNumberedSkuAnchors_(text, anchorItems) {
@@ -90,13 +94,10 @@ const SkuAnchorCorrectionEngine = (() => {
       const match = line.match(/^(\d{1,3})\s+([A-Z][A-Z0-9&.-]{1,15})\s+(.+)$/i);
       if (!match) return;
 
+      const vendor = compact_(match[2]);
       const productText = compact_(match[3]);
-      const anchorItem = anchorItems.find(item =>
-        productText === item.compactSku ||
-        productText.startsWith(item.compactSku) ||
-        item.compactSku.startsWith(productText)
-      );
-
+      const vendorProductText = vendor + productText;
+      const anchorItem = findPreferredAnchorItem_(productText, vendorProductText, anchorItems);
       if (!anchorItem) return;
 
       anchors.push({
@@ -109,6 +110,27 @@ const SkuAnchorCorrectionEngine = (() => {
     });
 
     return anchors.sort((a, b) => a.lineIndex - b.lineIndex);
+  }
+
+  function findPreferredAnchorItem_(productText, vendorProductText, anchorItems) {
+    const candidates = anchorItems
+      .map(item => {
+        let score = -1;
+        if (item.compactSku === vendorProductText) score = 5;
+        else if (item.compactSku === productText) score = 4;
+        else if (vendorProductText.startsWith(item.compactSku) || item.compactSku.startsWith(vendorProductText)) score = 3;
+        else if (productText.startsWith(item.compactSku) || item.compactSku.startsWith(productText)) score = 2;
+        else if (vendorProductText.includes(item.compactSku) || productText.includes(item.compactSku)) score = 1;
+        return { item, score };
+      })
+      .filter(candidate => candidate.score >= 0)
+      .sort((a, b) => {
+        if (a.item.priority !== b.item.priority) return a.item.priority - b.item.priority;
+        if (a.score !== b.score) return b.score - a.score;
+        return b.item.compactSku.length - a.item.compactSku.length;
+      });
+
+    return candidates.length ? candidates[0].item : null;
   }
 
   function findSkuAnchors_(text, anchorItems) {
@@ -139,7 +161,10 @@ const SkuAnchorCorrectionEngine = (() => {
       }
     }
 
-    return anchors.sort((a, b) => a.lineIndex - b.lineIndex);
+    return anchors.sort((a, b) => {
+      if (a.lineIndex !== b.lineIndex) return a.lineIndex - b.lineIndex;
+      return a.anchorItem.priority - b.anchorItem.priority;
+    });
   }
 
   function findNearestAnchor_(item, anchors, usedAnchors) {
@@ -162,6 +187,9 @@ const SkuAnchorCorrectionEngine = (() => {
       .filter(candidate => candidate.distance <= MAX_LINE_DISTANCE)
       .sort((a, b) => {
         if (a.distance !== b.distance) return a.distance - b.distance;
+        if (a.anchor.anchorItem.priority !== b.anchor.anchorItem.priority) {
+          return a.anchor.anchorItem.priority - b.anchor.anchorItem.priority;
+        }
         return a.anchor.lineIndex - b.anchor.lineIndex;
       });
 
@@ -185,9 +213,7 @@ const SkuAnchorCorrectionEngine = (() => {
       spaSku: isSpa ? anchorItem.sku : '',
       catalogMatch: isSpa,
       catalogPrice: isSpa ? anchorItem.price : null,
-      catalogExtPrice: isSpa && anchorItem.extPrice != null
-        ? anchorItem.extPrice
-        : null,
+      catalogExtPrice: isSpa && anchorItem.extPrice != null ? anchorItem.extPrice : null,
       noSpaMatch: !isSpa,
       skuSource: anchorItem.source,
       matchSource: isSpa ? matchSource : `${matchSource}_NOSPA`,
