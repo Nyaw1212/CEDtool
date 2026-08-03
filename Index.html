@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <?!= include('Styles'); ?>
+</head>
+<body>
+  <main class="app-shell">
+    <header class="app-header">
+      <div>
+        <h1>CED Price Engine</h1>
+        <p>Google Sheets price list viewer</p>
+      </div>
+      <button id="refreshButton" type="button">Refresh</button>
+    </header>
+
+    <section class="toolbar">
+      <input id="searchInput" type="search" placeholder="Search SKU or description">
+      <span id="recordCount">0 items</span>
+    </section>
+
+    <section class="table-card">
+      <div id="loadingState">Loading price data...</div>
+      <div id="errorState" hidden></div>
+
+      <div class="table-wrapper">
+        <table id="priceTable" hidden>
+          <thead>
+            <tr>
+              <th>SKU</th>
+              <th>Description</th>
+              <th class="number">Price</th>
+              <th class="number">Ext Price</th>
+            </tr>
+          </thead>
+          <tbody id="priceTableBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <?!= include('Scripts'); ?>
+</body>
+</html>
