@@ -2,8 +2,8 @@ const ParserEngine = (() => {
   function getMetadata() {
     return {
       id: 'parser',
-      name: 'Invoice Parser Engine',
-      version: '0.1.1',
+      name: 'Invoice and Quote Parser Engine',
+      version: '0.2.0',
       actions: ['parseInvoice']
     };
   }
@@ -12,7 +12,7 @@ const ParserEngine = (() => {
     const text = String(payload && payload.text ? payload.text : '').trim();
 
     if (!text) {
-      throw new Error('Invoice text is required.');
+      throw new Error('Invoice or quote text is required.');
     }
 
     const catalog = PriceEngine.list().items;
@@ -40,13 +40,14 @@ const ParserEngine = (() => {
       }
     });
 
-    const invoiceNumberMatch = text.match(/INVOICE\s+NO\.\s+INVOICE\s+DATE[\s\S]*?(\d+\s*-\s*\d+)\s+(\d{2}\/\d{2}\/\d{2,4})/i);
+    const documentInfo = extractDocumentInfo_(text);
 
     return {
       success: true,
+      documentType: documentInfo.type,
       invoice: {
-        number: invoiceNumberMatch ? invoiceNumberMatch[1].replace(/\s+/g, ' ') : '',
-        date: invoiceNumberMatch ? invoiceNumberMatch[2] : ''
+        number: documentInfo.number,
+        date: documentInfo.date
       },
       count: items.length,
       matchedCount: items.filter(item => item.catalogMatch).length,
@@ -67,28 +68,84 @@ const ParserEngine = (() => {
     const starts = [];
 
     lines.forEach((line, lineIndex) => {
-      if (!/^T\s+\d+(?:\.\d+)?\s+/i.test(line)) return;
+      const invoiceStart = /^T\s+\d+(?:\.\d+)?\s+/i.test(line);
+      const quoteInlineStart = /^\d{1,3}\s+[A-Z][A-Z0-9&.-]+\s+/i.test(line);
+      const quoteSplitStart = /^\d{1,3}$/.test(line);
 
-      const upperLine = line.toUpperCase();
-      const knownSku = knownSkus.find(sku => containsSku_(upperLine, sku));
+      if (!invoiceStart && !quoteInlineStart && !quoteSplitStart) return;
+
+      const knownSku = findKnownSkuNear_(lines, lineIndex, knownSkus, quoteSplitStart ? 6 : 3);
 
       if (knownSku) {
-        starts.push({ lineIndex, sku: knownSku, source: 'CATALOG_ANCHOR' });
+        starts.push({
+          lineIndex,
+          sku: knownSku,
+          source: quoteSplitStart ? 'CATALOG_ANCHOR_SPLIT' : 'CATALOG_ANCHOR'
+        });
         return;
       }
 
-      const fallback = line.match(/^T\s+(\d+(?:\.\d+)?)\s+([A-Z0-9&.-]+)\s+(\S+)/i);
-      if (!fallback) return;
+      if (invoiceStart) {
+        const fallback = line.match(/^T\s+(\d+(?:\.\d+)?)\s+([A-Z0-9&.-]+)\s+(\S+)/i);
+        if (!fallback) return;
 
-      const vendor = fallback[2].toUpperCase();
-      const sku = normalizeSku_(fallback[3]);
+        const vendor = fallback[2].toUpperCase();
+        const sku = normalizeSku_(fallback[3]);
 
-      if (vendor === 'MISC' || !looksLikeSku_(sku)) return;
+        if (vendor === 'MISC' || !looksLikeSku_(sku)) return;
+        starts.push({ lineIndex, sku, source: 'INVOICE_LINE_PATTERN' });
+        return;
+      }
 
-      starts.push({ lineIndex, sku, source: 'LINE_PATTERN' });
+      if (quoteInlineStart) {
+        const fallback = line.match(/^\d{1,3}\s+([A-Z][A-Z0-9&.-]+)\s+(\S+)/i);
+        if (!fallback) return;
+
+        const sku = normalizeSku_(fallback[2]);
+        if (!looksLikeSku_(sku)) return;
+        starts.push({ lineIndex, sku, source: 'QUOTE_LINE_PATTERN' });
+        return;
+      }
+
+      if (quoteSplitStart) {
+        const nextLine = lines[lineIndex + 1] || '';
+        const fallback = nextLine.match(/^[A-Z][A-Z0-9&.-]+\s+(\S+)/i);
+        if (!fallback) return;
+
+        const sku = normalizeSku_(fallback[1]);
+        if (!looksLikeSku_(sku)) return;
+        starts.push({ lineIndex, sku, source: 'QUOTE_SPLIT_PATTERN' });
+      }
     });
 
-    return starts;
+    return dedupeStarts_(starts);
+  }
+
+  function findKnownSkuNear_(lines, lineIndex, knownSkus, windowSize) {
+    const windowText = lines
+      .slice(lineIndex, Math.min(lines.length, lineIndex + windowSize))
+      .join(' ')
+      .toUpperCase();
+
+    const compactWindow = compactSku_(windowText);
+
+    for (const sku of knownSkus) {
+      if (containsSku_(windowText, sku) || compactWindow.includes(compactSku_(sku))) {
+        return sku;
+      }
+    }
+
+    return '';
+  }
+
+  function dedupeStarts_(starts) {
+    const seen = new Set();
+
+    return starts.filter(start => {
+      if (seen.has(start.lineIndex)) return false;
+      seen.add(start.lineIndex);
+      return true;
+    });
   }
 
   function parseItemBlock_(blockLines, start, catalogMap) {
@@ -96,18 +153,39 @@ const ParserEngine = (() => {
     const flat = blockLines.join(' ');
     const catalogItem = catalogMap.get(normalizeSku_(start.sku)) || null;
 
-    const orderedMatch = firstLine.match(/^T\s+(\d+(?:\.\d+)?)\s+/i);
-    const orderedQty = orderedMatch ? Number(orderedMatch[1]) : null;
+    const invoiceQtyMatch = firstLine.match(/^T\s+(\d+(?:\.\d+)?)\s+/i);
+    const fullPriceMatches = Array.from(flat.matchAll(
+      /(?:^|\s)(\d+(?:\.\d+)?)\s+\$?([\d,]+\.\d{2})\s+E\s+\$?([\d,]+\.\d{2})(?:\s|$)/gi
+    ));
 
-    const priceMatches = Array.from(flat.matchAll(/(?:^|\s)(\d+(?:\.\d+)?)\s+([\d,]+\.\d{2})\s+E\s+([\d,]+\.\d{2})(?:\s|$)/gi));
-    const priceMatch = priceMatches.length ? priceMatches[priceMatches.length - 1] : null;
+    const fullPriceMatch = fullPriceMatches.length ? fullPriceMatches[0] : null;
+    let shippedQty = null;
+    let price = null;
+    let extPrice = null;
+    let priceIndex = null;
 
-    if (!priceMatch) return null;
+    if (fullPriceMatch) {
+      shippedQty = Number(fullPriceMatch[1]);
+      price = toNumber_(fullPriceMatch[2]);
+      extPrice = toNumber_(fullPriceMatch[3]);
+      priceIndex = fullPriceMatch.index;
+    } else {
+      const partialPriceMatch = flat.match(
+        /(?:^|\s)(\d+(?:\.\d+)?)\s+\$?([\d,]+\.\d{2})\s+E(?:\s|$)/i
+      );
 
-    const shippedQty = Number(priceMatch[1]);
-    const price = toNumber_(priceMatch[2]);
-    const extPrice = toNumber_(priceMatch[3]);
-    const invoiceDescription = extractDescription_(flat, start.sku, priceMatch.index);
+      if (!partialPriceMatch) return null;
+
+      shippedQty = Number(partialPriceMatch[1]);
+      price = toNumber_(partialPriceMatch[2]);
+      extPrice = shippedQty != null && price != null
+        ? Number((shippedQty * price).toFixed(2))
+        : null;
+      priceIndex = partialPriceMatch.index;
+    }
+
+    const orderedQty = invoiceQtyMatch ? Number(invoiceQtyMatch[1]) : shippedQty;
+    const invoiceDescription = extractDescription_(flat, start.sku, priceIndex);
 
     return {
       sku: normalizeSku_(start.sku),
@@ -130,21 +208,52 @@ const ParserEngine = (() => {
     const upperSku = normalizeSku_(sku);
     const skuIndex = upperFlat.indexOf(upperSku);
 
-    if (skuIndex < 0) return '';
+    if (skuIndex >= 0) {
+      const start = skuIndex + upperSku.length;
+      const end = typeof priceIndex === 'number' && priceIndex > start ? priceIndex : flat.length;
 
-    const start = skuIndex + upperSku.length;
-    const end = typeof priceIndex === 'number' && priceIndex > start ? priceIndex : flat.length;
+      return flat
+        .slice(start, end)
+        .replace(/^\s+/, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
 
-    return flat
-      .slice(start, end)
-      .replace(/^\s+/, '')
-      .replace(/\s+/g, ' ')
-      .trim();
+    return '';
+  }
+
+  function extractDocumentInfo_(text) {
+    const invoiceMatch = text.match(
+      /INVOICE\s+NO\.\s+INVOICE\s+DATE[\s\S]*?(\d+\s*-\s*\d+)\s+(\d{2}\/\d{2}\/\d{2,4})/i
+    );
+
+    if (invoiceMatch) {
+      return {
+        type: 'INVOICE',
+        number: invoiceMatch[1].replace(/\s+/g, ' '),
+        date: invoiceMatch[2]
+      };
+    }
+
+    const quoteNumberMatch = text.match(/\b(Q\d{5,})\b/i);
+    const quoteDateMatch = text.match(/Quote Date:[\s\S]{0,160}?(\d{2}\/\d{2}\/\d{2,4})/i);
+
+    return {
+      type: quoteNumberMatch ? 'QUOTE' : 'DOCUMENT',
+      number: quoteNumberMatch ? quoteNumberMatch[1].toUpperCase() : '',
+      date: quoteDateMatch ? quoteDateMatch[1] : ''
+    };
   }
 
   function containsSku_(upperLine, sku) {
     const escaped = sku.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     return new RegExp(`(^|\\s)${escaped}(?=\\s|$)`, 'i').test(upperLine);
+  }
+
+  function compactSku_(value) {
+    return String(value == null ? '' : value)
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '');
   }
 
   function looksLikeSku_(sku) {
@@ -156,7 +265,7 @@ const ParserEngine = (() => {
   }
 
   function toNumber_(value) {
-    const number = Number(String(value == null ? '' : value).replace(/,/g, ''));
+    const number = Number(String(value == null ? '' : value).replace(/[$,]/g, ''));
     return Number.isFinite(number) ? number : null;
   }
 
