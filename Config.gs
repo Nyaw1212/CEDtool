@@ -1,8 +1,8 @@
 const CONFIG = Object.freeze({
   APP_NAME: 'CED Price Tool',
-  APP_VERSION: 'v0.4.1',
-  BUILD_LABEL: 'Quote Parser Build',
-  SPREADSHEET_ID: '12dmbFsAtR_K5ZOKuMebH5NHtzuvQ6WC4z1ECXO07gpY',
+  APP_VERSION: 'v0.7.3',
+  BUILD_LABEL: 'View All Default Fix',
+  SPREADSHEET_ID: '1fQtpNlT-Ib_6Kp9kkMUB75n7-9_IoFaBNBNgdW_30YU',
   SHEETS: Object.freeze({
     PRICE_LIST: 'LIST'
   })
