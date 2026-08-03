@@ -3,7 +3,7 @@ const ParserEngine = (() => {
     return {
       id: 'parser',
       name: 'Invoice Parser Engine',
-      version: '0.1.0',
+      version: '0.1.1',
       actions: ['parseInvoice']
     };
   }
@@ -32,7 +32,11 @@ const ParserEngine = (() => {
       const item = parseItemBlock_(blockLines, start, catalogMap);
 
       if (item && item.sku && item.price != null) {
-        items.push(item);
+        items.push({
+          ...item,
+          sourceOrder: items.length + 1,
+          sourceLine: start.lineIndex + 1
+        });
       }
     });
 
