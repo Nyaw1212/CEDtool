@@ -6,37 +6,34 @@ const SkuAnchorCorrectionEngine = (() => {
     const metadata = QuoteParserEngine.getMetadata();
     return {
       ...metadata,
-      name: 'Greentech Quote Parser with SKU Anchor Correction',
-      version: '0.7.7'
+      name: 'Greentech Parser with LIST and NOSPA Anchors',
+      version: '0.8.0'
     };
   }
 
   function parseInvoice(payload) {
     const result = QuoteParserEngine.parseInvoice(payload);
     const text = String(payload && payload.text ? payload.text : '');
-    const catalog = PriceEngine.list().items || [];
-    const numberedAnchors = findNumberedSkuAnchors_(text, catalog);
-    const generalAnchors = findCatalogSkuAnchors_(text, catalog);
+    const spaItems = PriceEngine.list().items || [];
+    const noSpaItems = PriceEngine.listNoSpa().items || [];
+    const anchorItems = prepareAnchorItems_(spaItems, noSpaItems);
+
+    const numberedAnchors = findNumberedSkuAnchors_(text, anchorItems);
+    const generalAnchors = findSkuAnchors_(text, anchorItems);
     const usedAnchors = new Set();
 
     const items = (result.items || []).map((item, itemIndex) => {
-      // Special condition for the normal numbered quote section. PDF text can
-      // give the parser an incorrect source line, so bind rows to numbered
-      // product headers by document order instead of nearest-line distance.
-      // Example: row 2 must map to "02 QCELL SPCD-00001", not back to row 1.
       if (itemIndex < numberedAnchors.length) {
-        const numberedAnchor = numberedAnchors[itemIndex];
-        usedAnchors.add(numberedAnchor.key);
-        return applyAnchor_(item, numberedAnchor, 'NUMBERED_HEADER_ORDER');
+        const anchor = numberedAnchors[itemIndex];
+        usedAnchors.add(anchor.key);
+        return applyAnchor_(item, anchor, 'NUMBERED_HEADER_ORDER');
       }
 
-      // Keep the existing dirty/stacked-page behavior for items after the
-      // numbered section, including split SKUs and missing extension prices.
       const anchor = findNearestAnchor_(item, generalAnchors, usedAnchors);
       if (!anchor) return item;
 
       usedAnchors.add(anchor.key);
-      return applyAnchor_(item, anchor, 'NEARBY_SPA_SKU_ANCHOR');
+      return applyAnchor_(item, anchor, 'NEARBY_SKU_ANCHOR');
     });
 
     return {
@@ -48,18 +45,45 @@ const SkuAnchorCorrectionEngine = (() => {
     };
   }
 
-  function findNumberedSkuAnchors_(text, catalog) {
-    const lines = String(text)
-      .replace(/\r/g, '')
-      .split('\n')
-      .map(line => line.replace(/\s+/g, ' ').trim())
-      .filter(Boolean);
+  function prepareAnchorItems_(spaItems, noSpaItems) {
+    const combined = [];
+    const seen = new Set();
 
-    const preparedCatalog = catalog
-      .map(item => ({ ...item, compactSku: compact_(item.sku) }))
-      .filter(item => item.compactSku.length >= 5)
-      .sort((a, b) => b.compactSku.length - a.compactSku.length);
+    spaItems.forEach(item => {
+      const compactSku = compact_(item.sku);
+      if (!compactSku || seen.has(`SPA:${compactSku}`)) return;
+      seen.add(`SPA:${compactSku}`);
+      combined.push({
+        sku: item.sku,
+        compactSku,
+        source: 'SPA',
+        price: item.price,
+        extPrice: item.extPrice,
+        description: item.description || ''
+      });
+    });
 
+    noSpaItems.forEach(item => {
+      const compactSku = compact_(item.sku);
+      if (!compactSku) return;
+      if (spaItems.some(spa => compact_(spa.sku) === compactSku)) return;
+      if (seen.has(`NOSPA:${compactSku}`)) return;
+      seen.add(`NOSPA:${compactSku}`);
+      combined.push({
+        sku: item.sku,
+        compactSku,
+        source: 'NOSPA',
+        price: null,
+        extPrice: null,
+        description: ''
+      });
+    });
+
+    return combined.sort((a, b) => b.compactSku.length - a.compactSku.length);
+  }
+
+  function findNumberedSkuAnchors_(text, anchorItems) {
+    const lines = normalizeLines_(text).filter(Boolean);
     const anchors = [];
 
     lines.forEach((line, lineIndex) => {
@@ -67,48 +91,40 @@ const SkuAnchorCorrectionEngine = (() => {
       if (!match) return;
 
       const productText = compact_(match[3]);
-      const catalogItem = preparedCatalog.find(item =>
-        productText.includes(item.compactSku) || item.compactSku.includes(productText)
+      const anchorItem = anchorItems.find(item =>
+        productText === item.compactSku ||
+        productText.startsWith(item.compactSku) ||
+        item.compactSku.startsWith(productText)
       );
 
-      if (!catalogItem) return;
+      if (!anchorItem) return;
 
       anchors.push({
-        key: `NUMBERED:${lineIndex}:${catalogItem.compactSku}`,
+        key: `NUMBERED:${lineIndex}:${anchorItem.source}:${anchorItem.compactSku}`,
         lineIndex,
         lineNumber: lineIndex + 1,
         lineCount: 1,
-        catalogItem
+        anchorItem
       });
     });
 
     return anchors.sort((a, b) => a.lineIndex - b.lineIndex);
   }
 
-  function findCatalogSkuAnchors_(text, catalog) {
-    const lines = String(text)
-      .replace(/\r/g, '')
-      .split('\n')
-      .map(line => line.replace(/\s+/g, ' ').trim());
-
-    const preparedCatalog = catalog
-      .map(item => ({ ...item, compactSku: compact_(item.sku) }))
-      .filter(item => item.compactSku.length >= 5)
-      .sort((a, b) => b.compactSku.length - a.compactSku.length);
-
+  function findSkuAnchors_(text, anchorItems) {
+    const lines = normalizeLines_(text);
     const anchors = [];
     const seen = new Set();
 
     for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
       for (let lineCount = 1; lineCount <= MAX_JOIN_LINES; lineCount += 1) {
-        const joined = lines.slice(lineIndex, lineIndex + lineCount).join(' ');
-        const compactJoined = compact_(joined);
+        const compactJoined = compact_(lines.slice(lineIndex, lineIndex + lineCount).join(' '));
         if (!compactJoined) continue;
 
-        for (const catalogItem of preparedCatalog) {
-          if (!compactJoined.includes(catalogItem.compactSku)) continue;
+        for (const anchorItem of anchorItems) {
+          if (!compactJoined.includes(anchorItem.compactSku)) continue;
 
-          const key = `${lineIndex}:${catalogItem.compactSku}`;
+          const key = `${lineIndex}:${anchorItem.source}:${anchorItem.compactSku}`;
           if (seen.has(key)) continue;
           seen.add(key);
 
@@ -117,7 +133,7 @@ const SkuAnchorCorrectionEngine = (() => {
             lineIndex,
             lineNumber: lineIndex + 1,
             lineCount,
-            catalogItem
+            anchorItem
           });
         }
       }
@@ -132,8 +148,7 @@ const SkuAnchorCorrectionEngine = (() => {
 
     const exact = anchors.find(anchor =>
       !usedAnchors.has(anchor.key) &&
-      anchor.catalogItem &&
-      compact_(anchor.catalogItem.sku) === currentSku &&
+      anchor.anchorItem.compactSku === currentSku &&
       Math.abs(anchor.lineNumber - sourceLine) <= MAX_LINE_DISTANCE
     );
     if (exact) return exact;
@@ -152,28 +167,39 @@ const SkuAnchorCorrectionEngine = (() => {
 
     if (!candidates.length) return null;
 
-    const candidate = candidates[0].anchor;
     if (item.catalogMatch && currentSku && compact_(item.spaSku) === currentSku) {
       return null;
     }
 
-    return candidate;
+    return candidates[0].anchor;
   }
 
   function applyAnchor_(item, anchor, matchSource) {
+    const anchorItem = anchor.anchorItem;
+    const isSpa = anchorItem.source === 'SPA';
+
     return {
       ...item,
-      parsedSku: anchor.catalogItem.sku,
-      sku: anchor.catalogItem.sku,
-      spaSku: anchor.catalogItem.sku,
-      catalogMatch: true,
-      catalogPrice: anchor.catalogItem.price,
-      catalogExtPrice: anchor.catalogItem.extPrice != null
-        ? anchor.catalogItem.extPrice
+      parsedSku: anchorItem.sku,
+      sku: anchorItem.sku,
+      spaSku: isSpa ? anchorItem.sku : '',
+      catalogMatch: isSpa,
+      catalogPrice: isSpa ? anchorItem.price : null,
+      catalogExtPrice: isSpa && anchorItem.extPrice != null
+        ? anchorItem.extPrice
         : null,
-      matchSource,
+      noSpaMatch: !isSpa,
+      skuSource: anchorItem.source,
+      matchSource: isSpa ? matchSource : `${matchSource}_NOSPA`,
       matchScore: 1
     };
+  }
+
+  function normalizeLines_(text) {
+    return String(text)
+      .replace(/\r/g, '')
+      .split('\n')
+      .map(line => line.replace(/\s+/g, ' ').trim());
   }
 
   function compact_(value) {
