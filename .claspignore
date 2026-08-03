@@ -1,8 +1,0 @@
-# Keep the standalone web app separate from the bound Sheet menu project.
-sheet-menu/**
-
-# Local/Git-only files
-.git/**
-.gitignore
-.clasp.json
-README.md
