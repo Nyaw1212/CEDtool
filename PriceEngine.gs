@@ -3,17 +3,17 @@ const PriceEngine = (() => {
     return {
       id: 'price',
       name: 'Price Engine',
-      version: '0.1.0',
-      actions: ['list', 'search', 'findBySku', 'compare']
+      version: '0.2.0',
+      actions: ['list', 'listNoSpa', 'search', 'findBySku', 'compare']
     };
   }
 
-  function getSheet_() {
+  function getSheetByName_(sheetName) {
     const spreadsheet = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
-    const sheet = spreadsheet.getSheetByName(CONFIG.SHEETS.PRICE_LIST);
+    const sheet = spreadsheet.getSheetByName(sheetName);
 
     if (!sheet) {
-      throw new Error(`Sheet "${CONFIG.SHEETS.PRICE_LIST}" was not found.`);
+      throw new Error(`Sheet "${sheetName}" was not found.`);
     }
 
     return sheet;
@@ -47,7 +47,7 @@ const PriceEngine = (() => {
   }
 
   function list() {
-    const sheet = getSheet_();
+    const sheet = getSheetByName_(CONFIG.SHEETS.PRICE_LIST);
     const lastRow = sheet.getLastRow();
 
     if (lastRow < 2) {
@@ -57,6 +57,25 @@ const PriceEngine = (() => {
     const rows = sheet.getRange(2, 1, lastRow - 1, 4).getValues();
     const items = rows
       .map((row, index) => createItem_(row, index + 2))
+      .filter(item => item.sku);
+
+    return { success: true, count: items.length, items };
+  }
+
+  function listNoSpa() {
+    const sheet = getSheetByName_(CONFIG.SHEETS.NO_SPA);
+    const lastRow = sheet.getLastRow();
+
+    if (lastRow < 2) {
+      return { success: true, count: 0, items: [] };
+    }
+
+    const rows = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+    const items = rows
+      .map((row, index) => ({
+        rowNumber: index + 2,
+        sku: normalizeSku_(row[0])
+      }))
       .filter(item => item.sku);
 
     return { success: true, count: items.length, items };
@@ -131,5 +150,5 @@ const PriceEngine = (() => {
     return { success: true, count: results.length, results };
   }
 
-  return { getMetadata, list, search, findBySku, compare };
+  return { getMetadata, list, listNoSpa, search, findBySku, compare };
 })();
