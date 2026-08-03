@@ -1,0 +1,109 @@
+<script>
+  const state = { items: [] };
+  const elements = {};
+
+  document.addEventListener('DOMContentLoaded', () => {
+    elements.searchInput = document.getElementById('searchInput');
+    elements.refreshButton = document.getElementById('refreshButton');
+    elements.recordCount = document.getElementById('recordCount');
+    elements.loadingState = document.getElementById('loadingState');
+    elements.errorState = document.getElementById('errorState');
+    elements.priceTable = document.getElementById('priceTable');
+    elements.priceTableBody = document.getElementById('priceTableBody');
+
+    elements.searchInput.addEventListener('input', renderFilteredItems);
+    elements.refreshButton.addEventListener('click', loadPriceData);
+
+    loadPriceData();
+  });
+
+  function callEngine(moduleName, actionName, payload = {}) {
+    return new Promise((resolve, reject) => {
+      google.script.run
+        .withSuccessHandler(resolve)
+        .withFailureHandler(reject)
+        .runEngine(moduleName, actionName, payload);
+    });
+  }
+
+  async function loadPriceData() {
+    setLoading(true);
+    clearError();
+
+    try {
+      const result = await callEngine('price', 'list', {});
+
+      if (!result.success) {
+        throw new Error(result.error || 'Unable to load price data.');
+      }
+
+      state.items = result.items || [];
+      renderFilteredItems();
+    } catch (error) {
+      showError(error.message || String(error));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function renderFilteredItems() {
+    const query = elements.searchInput.value.trim().toLowerCase();
+    const filtered = !query
+      ? state.items
+      : state.items.filter(item =>
+          item.sku.toLowerCase().includes(query) ||
+          item.description.toLowerCase().includes(query)
+        );
+
+    renderTable(filtered);
+  }
+
+  function renderTable(items) {
+    elements.priceTableBody.innerHTML = '';
+    const fragment = document.createDocumentFragment();
+
+    items.forEach(item => {
+      const row = document.createElement('tr');
+      row.innerHTML = `
+        <td>${escapeHtml(item.sku)}</td>
+        <td>${escapeHtml(item.description)}</td>
+        <td class="number">${formatCurrency(item.price)}</td>
+        <td class="number">${formatCurrency(item.extPrice)}</td>
+      `;
+      fragment.appendChild(row);
+    });
+
+    elements.priceTableBody.appendChild(fragment);
+    elements.priceTable.hidden = false;
+    elements.recordCount.textContent = `${items.length} item${items.length === 1 ? '' : 's'}`;
+  }
+
+  function formatCurrency(value) {
+    if (value === null || value === undefined) return '—';
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD'
+    }).format(value);
+  }
+
+  function escapeHtml(value) {
+    const element = document.createElement('div');
+    element.textContent = String(value == null ? '' : value);
+    return element.innerHTML;
+  }
+
+  function setLoading(isLoading) {
+    elements.loadingState.hidden = !isLoading;
+    if (isLoading) elements.priceTable.hidden = true;
+  }
+
+  function showError(message) {
+    elements.errorState.textContent = message;
+    elements.errorState.hidden = false;
+  }
+
+  function clearError() {
+    elements.errorState.hidden = true;
+    elements.errorState.textContent = '';
+  }
+</script>
