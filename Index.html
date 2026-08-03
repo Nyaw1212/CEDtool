@@ -10,13 +10,13 @@
     <header class="app-header">
       <div>
         <h1>CED Price Tool</h1>
-        <p>Parse Greentech invoices and cross-check pricing against the LIST sheet.</p>
+        <p>Parse Greentech invoices and cross-check pricing against the SPA PRICE sheet.</p>
       </div>
     </header>
 
     <nav class="tabs" aria-label="Tool sections">
       <button class="tab-button active" data-tab="parser" type="button">Invoice Parser</button>
-      <button class="tab-button" data-tab="catalog" type="button">Price List</button>
+      <button class="tab-button" data-tab="catalog" type="button">SPA Price</button>
     </nav>
 
     <section id="parserTab" class="tab-panel active">
@@ -61,7 +61,7 @@
                 All <span id="chipAllCount">0</span>
               </button>
               <button class="filter-chip" data-filter="matched" type="button">
-                LIST Match <span id="chipMatchedCount">0</span>
+                SPA Match <span id="chipMatchedCount">0</span>
               </button>
               <button class="filter-chip" data-filter="new" type="button">
                 New SKU <span id="chipNewCount">0</span>
@@ -101,8 +101,8 @@
                   <th>SKU</th>
                   <th>Description</th>
                   <th class="number">Qty</th>
-                  <th class="number">Invoice</th>
-                  <th class="number">LIST</th>
+                  <th class="number">Invoice Price</th>
+                  <th class="number">SPA Price</th>
                   <th class="number">Difference</th>
                   <th>Status</th>
                 </tr>
