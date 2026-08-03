@@ -9,17 +9,111 @@
   <main class="app-shell">
     <header class="app-header">
       <div>
-        <h1>CED Price Engine</h1>
-        <p>Sheet-backed catalog viewer and invoice parser</p>
+        <h1>CED Price Tool</h1>
+        <p>Parse Greentech invoices and cross-check pricing against the LIST sheet.</p>
       </div>
     </header>
 
     <nav class="tabs" aria-label="Tool sections">
-      <button class="tab-button active" data-tab="catalog" type="button">Price List</button>
-      <button class="tab-button" data-tab="parser" type="button">Invoice Parser</button>
+      <button class="tab-button active" data-tab="parser" type="button">Invoice Parser</button>
+      <button class="tab-button" data-tab="catalog" type="button">Price List</button>
     </nav>
 
-    <section id="catalogTab" class="tab-panel active">
+    <section id="parserTab" class="tab-panel active">
+      <div class="parser-workspace">
+        <aside class="parser-input-panel panel-card">
+          <div class="panel-heading">
+            <div>
+              <span class="eyebrow">INPUT</span>
+              <h2>Invoice text</h2>
+            </div>
+            <button id="clearButton" class="secondary-button" type="button">Clear</button>
+          </div>
+
+          <textarea id="invoiceText" placeholder="Paste the complete Greentech invoice text here..."></textarea>
+
+          <div class="parser-actions">
+            <button id="parseButton" class="primary-button" type="button">Parse Invoice</button>
+          </div>
+
+          <div id="parserError" class="error-message" hidden></div>
+
+          <section id="parserSummary" class="invoice-summary" hidden>
+            <div class="summary-line">
+              <span>Invoice</span>
+              <strong id="invoiceNumber">—</strong>
+            </div>
+            <div class="summary-line">
+              <span>Date</span>
+              <strong id="invoiceDate">—</strong>
+            </div>
+          </section>
+
+          <section class="filter-section" aria-label="Result filters">
+            <div class="filter-heading">
+              <span class="eyebrow">FILTER RESULTS</span>
+              <span id="visibleCount" class="muted-count">0 shown</span>
+            </div>
+
+            <div class="filter-chips" role="group" aria-label="Parser result filters">
+              <button class="filter-chip active" data-filter="all" type="button">
+                All <span id="chipAllCount">0</span>
+              </button>
+              <button class="filter-chip" data-filter="matched" type="button">
+                LIST Match <span id="chipMatchedCount">0</span>
+              </button>
+              <button class="filter-chip" data-filter="new" type="button">
+                New SKU <span id="chipNewCount">0</span>
+              </button>
+              <button class="filter-chip" data-filter="changed" type="button">
+                Price Changed <span id="chipChangedCount">0</span>
+              </button>
+              <button class="filter-chip" data-filter="unchanged" type="button">
+                Same Price <span id="chipUnchangedCount">0</span>
+              </button>
+            </div>
+          </section>
+        </aside>
+
+        <section class="parser-results-panel panel-card">
+          <div class="results-header">
+            <div>
+              <span class="eyebrow">OUTPUT</span>
+              <h2>Parsed line items</h2>
+            </div>
+
+            <div class="results-tools">
+              <input id="parserSearchInput" type="search" placeholder="Search parsed results">
+              <span id="parsedCount" class="result-total">0 items</span>
+            </div>
+          </div>
+
+          <div id="parserEmptyState" class="empty-state">
+            <strong>No parsed items yet</strong>
+            <span>Paste an invoice on the left, then click Parse Invoice.</span>
+          </div>
+
+          <div id="parserResultsCard" class="table-wrapper parser-results-wrapper" hidden>
+            <table id="parserTable">
+              <thead>
+                <tr>
+                  <th>SKU</th>
+                  <th>Description</th>
+                  <th class="number">Qty</th>
+                  <th class="number">Invoice</th>
+                  <th class="number">LIST</th>
+                  <th class="number">Difference</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="parserTableBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <section id="catalogTab" class="tab-panel">
       <div class="toolbar">
         <input id="searchInput" type="search" placeholder="Search SKU or description">
         <div class="toolbar-actions">
@@ -32,7 +126,7 @@
         <div id="loadingState">Loading price data...</div>
         <div id="errorState" hidden></div>
 
-        <div class="table-wrapper">
+        <div class="table-wrapper catalog-table-wrapper">
           <table id="priceTable" hidden>
             <thead>
               <tr>
@@ -43,48 +137,6 @@
               </tr>
             </thead>
             <tbody id="priceTableBody"></tbody>
-          </table>
-        </div>
-      </section>
-    </section>
-
-    <section id="parserTab" class="tab-panel">
-      <section class="parser-card">
-        <div class="section-heading">
-          <div>
-            <h2>Greentech Invoice Parser</h2>
-            <p>Paste invoice text below. Known SKUs are cross-checked against the LIST sheet.</p>
-          </div>
-          <button id="parseButton" type="button">Parse Invoice</button>
-        </div>
-
-        <textarea id="invoiceText" rows="14" placeholder="Paste invoice text here..."></textarea>
-        <div id="parserError" class="error-message" hidden></div>
-      </section>
-
-      <section id="parserSummary" class="summary-grid" hidden>
-        <article><span>Invoice</span><strong id="invoiceNumber">—</strong></article>
-        <article><span>Date</span><strong id="invoiceDate">—</strong></article>
-        <article><span>Items</span><strong id="parsedCount">0</strong></article>
-        <article><span>Catalog Matches</span><strong id="matchedCount">0</strong></article>
-        <article><span>New SKUs</span><strong id="newSkuCount">0</strong></article>
-      </section>
-
-      <section id="parserResultsCard" class="table-card" hidden>
-        <div class="table-wrapper parser-results-wrapper">
-          <table id="parserTable">
-            <thead>
-              <tr>
-                <th>SKU</th>
-                <th>Description</th>
-                <th class="number">Qty</th>
-                <th class="number">Invoice Price</th>
-                <th class="number">Ext Price</th>
-                <th class="number">LIST Price</th>
-                <th>Match</th>
-              </tr>
-            </thead>
-            <tbody id="parserTableBody"></tbody>
           </table>
         </div>
       </section>
