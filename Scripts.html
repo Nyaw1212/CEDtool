@@ -1,5 +1,10 @@
 <script>
-  const state = { items: [], parsedItems: [] };
+  const state = {
+    items: [],
+    parsedItems: [],
+    parserFilter: 'all'
+  };
+
   const elements = {};
 
   document.addEventListener('DOMContentLoaded', () => {
@@ -10,25 +15,45 @@
     elements.errorState = document.getElementById('errorState');
     elements.priceTable = document.getElementById('priceTable');
     elements.priceTableBody = document.getElementById('priceTableBody');
+
     elements.parseButton = document.getElementById('parseButton');
+    elements.clearButton = document.getElementById('clearButton');
     elements.invoiceText = document.getElementById('invoiceText');
     elements.parserError = document.getElementById('parserError');
     elements.parserSummary = document.getElementById('parserSummary');
     elements.parserResultsCard = document.getElementById('parserResultsCard');
+    elements.parserEmptyState = document.getElementById('parserEmptyState');
     elements.parserTableBody = document.getElementById('parserTableBody');
+    elements.parserSearchInput = document.getElementById('parserSearchInput');
     elements.invoiceNumber = document.getElementById('invoiceNumber');
     elements.invoiceDate = document.getElementById('invoiceDate');
     elements.parsedCount = document.getElementById('parsedCount');
-    elements.matchedCount = document.getElementById('matchedCount');
-    elements.newSkuCount = document.getElementById('newSkuCount');
+    elements.visibleCount = document.getElementById('visibleCount');
+    elements.chipAllCount = document.getElementById('chipAllCount');
+    elements.chipMatchedCount = document.getElementById('chipMatchedCount');
+    elements.chipNewCount = document.getElementById('chipNewCount');
+    elements.chipChangedCount = document.getElementById('chipChangedCount');
+    elements.chipUnchangedCount = document.getElementById('chipUnchangedCount');
 
     document.querySelectorAll('.tab-button').forEach(button => {
       button.addEventListener('click', () => activateTab(button.dataset.tab));
     });
 
+    document.querySelectorAll('.filter-chip').forEach(button => {
+      button.addEventListener('click', () => {
+        state.parserFilter = button.dataset.filter;
+        document.querySelectorAll('.filter-chip').forEach(chip => {
+          chip.classList.toggle('active', chip === button);
+        });
+        renderFilteredParserItems();
+      });
+    });
+
     elements.searchInput.addEventListener('input', renderFilteredItems);
     elements.refreshButton.addEventListener('click', loadPriceData);
     elements.parseButton.addEventListener('click', parseInvoice);
+    elements.clearButton.addEventListener('click', clearParser);
+    elements.parserSearchInput.addEventListener('input', renderFilteredParserItems);
 
     loadPriceData();
   });
@@ -74,6 +99,7 @@
 
     if (!text) {
       showParserError('Paste invoice text before parsing.');
+      elements.invoiceText.focus();
       return;
     }
 
@@ -84,7 +110,9 @@
       const result = await callEngine('parser', 'parseInvoice', { text });
       if (!result.success) throw new Error(result.error || 'Unable to parse invoice.');
 
-      state.parsedItems = result.items || [];
+      state.parsedItems = (result.items || []).map(enrichParsedItem);
+      state.parserFilter = 'all';
+      resetActiveFilterChip();
       renderParserResult(result);
     } catch (error) {
       showParserError(error.message || String(error));
@@ -94,37 +122,137 @@
     }
   }
 
-  function renderParserResult(result) {
-    elements.invoiceNumber.textContent = result.invoice && result.invoice.number ? result.invoice.number : '—';
-    elements.invoiceDate.textContent = result.invoice && result.invoice.date ? result.invoice.date : '—';
-    elements.parsedCount.textContent = result.count || 0;
-    elements.matchedCount.textContent = result.matchedCount || 0;
-    elements.newSkuCount.textContent = result.newSkuCount || 0;
-    elements.parserSummary.hidden = false;
-    elements.parserResultsCard.hidden = false;
-    elements.parserTableBody.innerHTML = '';
+  function enrichParsedItem(item) {
+    const invoicePrice = toFiniteNumber(item.price);
+    const catalogPrice = toFiniteNumber(item.catalogPrice);
+    const difference = invoicePrice !== null && catalogPrice !== null
+      ? invoicePrice - catalogPrice
+      : null;
 
+    let priceStatus = 'NEW';
+    if (item.catalogMatch && difference === 0) priceStatus = 'UNCHANGED';
+    if (item.catalogMatch && difference > 0) priceStatus = 'INCREASED';
+    if (item.catalogMatch && difference < 0) priceStatus = 'DECREASED';
+
+    return {
+      ...item,
+      difference,
+      priceStatus
+    };
+  }
+
+  function renderParserResult(result) {
+    elements.invoiceNumber.textContent = result.invoice && result.invoice.number
+      ? result.invoice.number
+      : '—';
+    elements.invoiceDate.textContent = result.invoice && result.invoice.date
+      ? result.invoice.date
+      : '—';
+
+    elements.parserSummary.hidden = false;
+    elements.parserEmptyState.hidden = true;
+    elements.parserResultsCard.hidden = false;
+
+    updateFilterCounts();
+    renderFilteredParserItems();
+  }
+
+  function renderFilteredParserItems() {
+    const query = elements.parserSearchInput.value.trim().toLowerCase();
+
+    const filtered = state.parsedItems.filter(item => {
+      const matchesSearch = !query ||
+        String(item.sku || '').toLowerCase().includes(query) ||
+        String(item.description || item.invoiceDescription || '').toLowerCase().includes(query);
+
+      if (!matchesSearch) return false;
+
+      switch (state.parserFilter) {
+        case 'matched':
+          return item.catalogMatch;
+        case 'new':
+          return !item.catalogMatch;
+        case 'changed':
+          return item.priceStatus === 'INCREASED' || item.priceStatus === 'DECREASED';
+        case 'unchanged':
+          return item.priceStatus === 'UNCHANGED';
+        default:
+          return true;
+      }
+    });
+
+    renderParserTable(filtered);
+  }
+
+  function renderParserTable(items) {
+    elements.parserTableBody.innerHTML = '';
     const fragment = document.createDocumentFragment();
 
-    state.parsedItems.forEach(item => {
+    items.forEach(item => {
       const row = document.createElement('tr');
-      const badgeClass = item.catalogMatch ? 'badge matched' : 'badge new';
-      const badgeText = item.catalogMatch ? 'LIST MATCH' : 'NEW SKU';
+      const status = getStatusPresentation(item);
 
       row.innerHTML = `
-        <td>${escapeHtml(item.sku)}</td>
+        <td class="sku-cell">${escapeHtml(item.sku)}</td>
         <td>${escapeHtml(item.description || item.invoiceDescription)}</td>
         <td class="number">${formatNumber(item.quantityShipped)}</td>
         <td class="number">${formatCurrency(item.price)}</td>
-        <td class="number">${formatCurrency(item.extPrice)}</td>
         <td class="number">${formatCurrency(item.catalogPrice)}</td>
-        <td><span class="${badgeClass}">${badgeText}</span></td>
+        <td class="number ${differenceClass(item.difference)}">${formatSignedCurrency(item.difference)}</td>
+        <td><span class="badge ${status.className}">${status.label}</span></td>
       `;
 
       fragment.appendChild(row);
     });
 
     elements.parserTableBody.appendChild(fragment);
+    elements.visibleCount.textContent = `${items.length} shown`;
+    elements.parsedCount.textContent = `${state.parsedItems.length} item${state.parsedItems.length === 1 ? '' : 's'}`;
+  }
+
+  function updateFilterCounts() {
+    const matched = state.parsedItems.filter(item => item.catalogMatch).length;
+    const newItems = state.parsedItems.filter(item => !item.catalogMatch).length;
+    const changed = state.parsedItems.filter(item =>
+      item.priceStatus === 'INCREASED' || item.priceStatus === 'DECREASED'
+    ).length;
+    const unchanged = state.parsedItems.filter(item => item.priceStatus === 'UNCHANGED').length;
+
+    elements.chipAllCount.textContent = state.parsedItems.length;
+    elements.chipMatchedCount.textContent = matched;
+    elements.chipNewCount.textContent = newItems;
+    elements.chipChangedCount.textContent = changed;
+    elements.chipUnchangedCount.textContent = unchanged;
+  }
+
+  function getStatusPresentation(item) {
+    if (!item.catalogMatch) return { label: 'NEW SKU', className: 'new' };
+    if (item.priceStatus === 'INCREASED') return { label: 'INCREASED', className: 'increased' };
+    if (item.priceStatus === 'DECREASED') return { label: 'DECREASED', className: 'decreased' };
+    return { label: 'SAME PRICE', className: 'matched' };
+  }
+
+  function clearParser() {
+    elements.invoiceText.value = '';
+    elements.parserSearchInput.value = '';
+    state.parsedItems = [];
+    state.parserFilter = 'all';
+    resetActiveFilterChip();
+    clearParserError();
+    elements.parserSummary.hidden = true;
+    elements.parserResultsCard.hidden = true;
+    elements.parserEmptyState.hidden = false;
+    elements.parserTableBody.innerHTML = '';
+    elements.parsedCount.textContent = '0 items';
+    elements.visibleCount.textContent = '0 shown';
+    updateFilterCounts();
+    elements.invoiceText.focus();
+  }
+
+  function resetActiveFilterChip() {
+    document.querySelectorAll('.filter-chip').forEach(chip => {
+      chip.classList.toggle('active', chip.dataset.filter === 'all');
+    });
   }
 
   function renderFilteredItems() {
@@ -146,7 +274,7 @@
     items.forEach(item => {
       const row = document.createElement('tr');
       row.innerHTML = `
-        <td>${escapeHtml(item.sku)}</td>
+        <td class="sku-cell">${escapeHtml(item.sku)}</td>
         <td>${escapeHtml(item.description)}</td>
         <td class="number">${formatCurrency(item.price)}</td>
         <td class="number">${formatCurrency(item.extPrice)}</td>
@@ -159,14 +287,40 @@
     elements.recordCount.textContent = `${items.length} item${items.length === 1 ? '' : 's'}`;
   }
 
+  function differenceClass(value) {
+    if (value > 0) return 'difference-positive';
+    if (value < 0) return 'difference-negative';
+    return '';
+  }
+
   function formatCurrency(value) {
-    if (value === null || value === undefined) return '—';
-    return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value);
+    const number = toFiniteNumber(value);
+    if (number === null) return '—';
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD'
+    }).format(number);
+  }
+
+  function formatSignedCurrency(value) {
+    const number = toFiniteNumber(value);
+    if (number === null) return '—';
+    if (number === 0) return '$0.00';
+
+    const absolute = formatCurrency(Math.abs(number));
+    return `${number > 0 ? '+' : '-'}${absolute}`;
   }
 
   function formatNumber(value) {
-    if (value === null || value === undefined) return '—';
-    return new Intl.NumberFormat('en-US').format(value);
+    const number = toFiniteNumber(value);
+    if (number === null) return '—';
+    return new Intl.NumberFormat('en-US').format(number);
+  }
+
+  function toFiniteNumber(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
   }
 
   function escapeHtml(value) {
