@@ -5,15 +5,15 @@
       allChip.childNodes[0].textContent = 'View All ';
     }
 
-    state.parserFilter = 'matched';
+    state.parserFilter = 'all';
     resetActiveFilterChip();
   });
 
   function resetActiveFilterChip() {
-    state.parserFilter = 'matched';
+    state.parserFilter = 'all';
 
     document.querySelectorAll('.filter-chip').forEach(chip => {
-      chip.classList.toggle('active', chip.dataset.filter === 'matched');
+      chip.classList.toggle('active', chip.dataset.filter === 'all');
     });
   }
 
@@ -34,7 +34,7 @@
         case 'changed': return item.priceStatus === 'INCREASED' || item.priceStatus === 'DECREASED';
         case 'unchanged': return item.priceStatus === 'UNCHANGED';
         case 'all': return true;
-        default: return item.catalogMatch;
+        default: return true;
       }
     });
 
