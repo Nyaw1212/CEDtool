@@ -8,7 +8,7 @@ const Engine = (() => {
   function getModules_() {
     return {
       price: PriceEngine,
-      parser: SkuCorrectionEngine
+      parser: SkuAnchorCorrectionEngine
     };
   }
 
