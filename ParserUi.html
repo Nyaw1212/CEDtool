@@ -1,0 +1,51 @@
+<script>
+  function renderFilteredParserItems() {
+    const query = elements.parserSearchInput.value.trim().toLowerCase();
+
+    const filtered = state.parsedItems.filter(item => {
+      const matchesSearch = !query ||
+        String(item.parsedSku || item.sku || '').toLowerCase().includes(query) ||
+        String(item.spaSku || '').toLowerCase().includes(query) ||
+        String(item.description || item.invoiceDescription || '').toLowerCase().includes(query);
+
+      if (!matchesSearch) return false;
+
+      switch (state.parserFilter) {
+        case 'matched': return item.catalogMatch;
+        case 'new': return !item.catalogMatch;
+        case 'changed': return item.priceStatus === 'INCREASED' || item.priceStatus === 'DECREASED';
+        case 'unchanged': return item.priceStatus === 'UNCHANGED';
+        default: return true;
+      }
+    });
+
+    renderParserTable(filtered);
+  }
+
+  function renderParserTable(items) {
+    elements.parserTableBody.innerHTML = '';
+    const fragment = document.createDocumentFragment();
+
+    items.forEach(item => {
+      const row = document.createElement('tr');
+      const status = getStatusPresentation(item);
+
+      row.innerHTML = `
+        <td class="sku-cell">${escapeHtml(item.parsedSku || item.sku || '')}</td>
+        <td class="sku-cell">${escapeHtml(item.spaSku || '')}</td>
+        <td>${escapeHtml(item.invoiceDescription || item.description || '')}</td>
+        <td class="number">${formatNumber(item.quantityShipped)}</td>
+        <td class="number">${formatCurrency(item.price)}</td>
+        <td class="number">${formatCurrency(item.catalogPrice)}</td>
+        <td class="number ${differenceClass(item.difference)}">${formatSignedCurrency(item.difference)}</td>
+        <td><span class="badge ${status.className}">${status.label}</span></td>
+      `;
+
+      fragment.appendChild(row);
+    });
+
+    elements.parserTableBody.appendChild(fragment);
+    elements.visibleCount.textContent = `${items.length} shown`;
+    elements.parsedCount.textContent = `${state.parsedItems.length} item${state.parsedItems.length === 1 ? '' : 's'}`;
+  }
+</script>
